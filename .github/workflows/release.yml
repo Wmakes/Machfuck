@@ -46,6 +46,9 @@ jobs:
           esac
           tools/check-version.sh "$VERSION"
 
+      - name: Fetch dependency tags
+        run: mach dep pull .
+
       - name: Format check
         run: mach fmt --check .
 
