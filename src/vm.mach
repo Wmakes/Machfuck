@@ -1,0 +1,62 @@
+# Brainfuck virtual machine
+
+use machfuck.program;
+use A: std.allocator;
+use std.system.os;
+use std.types.result.res;
+use std.types.size.usize;
+
+pub val OK:           u8 = 0;
+pub val OUT_OF_MEM:   u8 = 1;
+pub val LEFT_BOUND:   u8 = 2;
+pub val RIGHT_BOUND:  u8 = 3;
+pub val OUTPUT_ERROR: u8 = 4;
+pub val INPUT_ERROR:  u8 = 5;
+
+val TAPE_SIZE: usize = 30000;
+
+# Execute pointer movement over a freshly zeroed 30,000-byte tape.
+pub fun run(a: *A.Allocator, p: *program.Program) u8 {
+    val allocated: res[*u8, A.Error] = A.zallocate[u8](a, TAPE_SIZE);
+    if (sel allocated.err) { ret OUT_OF_MEM; }
+    val tape: *u8 = allocated.ok;
+    fin { A.deallocate[u8](a, tape, TAPE_SIZE); }
+
+    var data_pointer:        usize = 0;
+    var instruction_pointer: usize = 0;
+    for (instruction_pointer < p.instructions.len) {
+        val instruction: program.Instruction = p.instructions.data[instruction_pointer];
+        if (instruction.operation == program.OP_RIGHT) {
+            if (data_pointer + 1 >= TAPE_SIZE) { ret RIGHT_BOUND; }
+            data_pointer = data_pointer + 1;
+        }
+        or (instruction.operation == program.OP_LEFT) {
+            if (data_pointer == 0) { ret LEFT_BOUND; }
+            data_pointer = data_pointer - 1;
+        }
+        or (instruction.operation == program.OP_INCREMENT) {
+            if (tape[data_pointer] == 255) { tape[data_pointer] = 0; }
+            or                             { tape[data_pointer] = tape[data_pointer] + 1; }
+        }
+        or (instruction.operation == program.OP_DECREMENT) {
+            if (tape[data_pointer] == 0) { tape[data_pointer] = 255; }
+            or                           { tape[data_pointer] = tape[data_pointer] - 1; }
+        }
+        or (instruction.operation == program.OP_OUTPUT) {
+            if (os.write(os.stdout(), ?tape[data_pointer], 1) != 1) { ret OUTPUT_ERROR; }
+        }
+        or (instruction.operation == program.OP_INPUT) {
+            val read: i64 = os.read(os.stdin(), ?tape[data_pointer], 1);
+            if (read < 0)  { ret INPUT_ERROR; }
+            if (read == 0) { tape[data_pointer] = 0; }
+        }
+        or (instruction.operation == program.OP_LOOP_START) {
+            if (tape[data_pointer] == 0) { instruction_pointer = instruction.jump; }
+        }
+        or (instruction.operation == program.OP_LOOP_END) {
+            if (tape[data_pointer] != 0) { instruction_pointer = instruction.jump; }
+        }
+        instruction_pointer = instruction_pointer + 1;
+    }
+    ret OK;
+}

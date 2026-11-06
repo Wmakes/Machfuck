@@ -1,0 +1,282 @@
+# Machfuck command-line interface
+
+use A: std.allocator;
+use std.allocator.page;
+use std.collections.vector.Vector;
+use std.filesystem;
+use std.io.error.Error;
+use std.print;
+use std.process.env;
+use std.process.exec;
+use std.runtime;
+use std.system.os;
+use std.types.error.err;
+use pathmod: std.types.path;
+use std.types.result.res;
+use std.types.size.usize;
+use std.types.string.StrError;
+use std.types.string.str;
+use std.types.string.str_equals;
+use std.types.string.str_join;
+use std.types.string.str_len;
+
+use machfuck.program;
+use machfuck.source;
+use machfuck.transpiler;
+use machfuck.vm;
+
+val HELP: str = "Machfuck - Brainfuck interpreter and compiler\n\nUsage:\n  machfuck program.bf\n  machfuck compile program.bf [--target TARGET] [--output DIRECTORY]\n  machfuck --help\n  machfuck --version\n\nCompile options:\n  --target TARGET      Select OS and architecture (default: linux-x86_64)\n  --output DIRECTORY   Place executable in DIRECTORY (default: current directory)\n\nTargets:\n  linux-x86_64  linux-arm64  linux-riscv64\n  windows-x86_64  darwin-x86_64  darwin-aarch64\n\nCompilation requires mach on PATH. It creates an isolated temporary Mach project and writes the executable named after the .bf file (with .exe on Windows).";
+
+val GENERATED_MANIFEST: str = "[project]\nid = \"machfuck_generated\"\nversion = \"1.0.0\"\nmach = \"^6.0\"\nsrc = \"src\"\nout = \"out/{target.name}/{profile.name}\"\n\n[target.linux-x86_64]\nisa = \"x86_64\"\nos = \"linux\"\nabi = \"sysv64\"\n\n[target.linux-arm64]\nisa = \"aarch64\"\nos = \"linux\"\nabi = \"aapcs64\"\n\n[target.linux-riscv64]\nisa = \"riscv64\"\nos = \"linux\"\nabi = \"lp64\"\n\n[target.windows-x86_64]\nisa = \"x86_64\"\nos = \"windows\"\nabi = \"win64\"\n\n[target.darwin-x86_64]\nisa = \"x86_64\"\nos = \"darwin\"\nabi = \"sysv64\"\n\n[target.darwin-aarch64]\nisa = \"aarch64\"\nos = \"darwin\"\nabi = \"aapcs64\"\n\n[artifact.machfuck_generated]\nkind = \"bin\"\nentry = \"main.mach\"\nout = \"bin/machfuck_generated{artifact.suffix}\"\ntargets = [\"*\"]\nlink = [\"kernel32\"]\nneed = []\n\n[link.kernel32]\nsource = \"system\"\nname = \"kernel32.dll\"\nos = [\"windows\"]\nisa = [\"*\"]\nabi = [\"*\"]\nexport = false\n\n[profile.debug]\ndefault = true\nopt = 0\ndebug = true\nsimd = \"scalarize\"\nvectorize = false\nfloat_reassoc = false\n\n[profile.release]\nopt = 2\ndebug = false\nsimd = \"scalarize\"\nvectorize = true\nfloat_reassoc = false\n\n[dep.std]\ngit = \"https://github.com/briar-systems/mach-std\"\nversion = \"^9.5.0\"\n";
+
+fun parser_error(status: u8) {
+    if (status == program.PARSE_OPEN_BRACKET)  { print.eprintln("machfuck: parser error: unmatched opening bracket"); }
+    or (status == program.PARSE_CLOSE_BRACKET) { print.eprintln("machfuck: parser error: unmatched closing bracket"); }
+    or                                         { print.eprintln("machfuck: parser error: out of memory"); }
+}
+
+fun runtime_error(status: u8) {
+    if (status == vm.LEFT_BOUND)   { print.eprintln("machfuck: runtime error: data pointer moved left of the tape"); }
+    or (status == vm.RIGHT_BOUND)  { print.eprintln("machfuck: runtime error: data pointer moved right of the tape"); }
+    or (status == vm.INPUT_ERROR)  { print.eprintln("machfuck: runtime error: failed to read standard input"); }
+    or (status == vm.OUTPUT_ERROR) { print.eprintln("machfuck: runtime error: failed to write standard output"); }
+    or                             { print.eprintln("machfuck: runtime error: out of memory"); }
+}
+
+fun interpret(a: *A.Allocator, path: str) i64 {
+    var bytes:  Vector[u8];
+    val loaded: u8 = source.load(a, path, ?bytes);
+    fin { source.dnit(?bytes); }
+    if (loaded != source.LOAD_OK) {
+        if (loaded == source.LOAD_OUT_OF_MEM) { print.eprintln("machfuck: source loader: out of memory"); }
+        or                                    { print.eprintlnf("machfuck: cannot read '{}'", path); }
+        ret 1;
+    }
+
+    var parsed:        program.Program;
+    val parsed_status: u8 = program.parse(a, bytes.data, bytes.len, ?parsed);
+    fin { program.dnit(?parsed); }
+    if (parsed_status != program.PARSE_OK) {
+        parser_error(parsed_status);
+        ret 1;
+    }
+
+    val ran: u8 = vm.run(a, ?parsed);
+    if (ran != vm.OK) {
+        runtime_error(ran);
+        ret 1;
+    }
+    ret 0;
+}
+
+fun compile_source(a: *A.Allocator, path: str, target: str, directory: str) i64 {
+    if (!str_equals(target, "linux-x86_64") && !str_equals(target, "linux-arm64") && !str_equals(target, "linux-riscv64") && !str_equals(target, "windows-x86_64") && !str_equals(target, "darwin-x86_64") && !str_equals(target, "darwin-aarch64")) {
+        print.eprintln("machfuck: compile error: unsupported target; see --help");
+        ret 2;
+    }
+    val compiler: res[str, exec.Error] = exec.resolve(a, "mach");
+    if (sel compiler.err) {
+        print.eprintln("machfuck: compile error: Mach compiler is not installed or not on PATH");
+        ret 1;
+    }
+    fin { A.deallocate[u8](a, compiler.ok, str_len(compiler.ok) + 1); }
+    var bytes:  Vector[u8];
+    val loaded: u8 = source.load(a, path, ?bytes);
+    fin { source.dnit(?bytes); }
+    if (loaded != source.LOAD_OK) {
+        if (loaded == source.LOAD_OUT_OF_MEM) { print.eprintln("machfuck: source loader: out of memory"); }
+        or                                    { print.eprintlnf("machfuck: cannot read '{}'", path); }
+        ret 1;
+    }
+
+    var parsed:        program.Program;
+    val parsed_status: u8 = program.parse(a, bytes.data, bytes.len, ?parsed);
+    fin { program.dnit(?parsed); }
+    if (parsed_status != program.PARSE_OK) {
+        parser_error(parsed_status);
+        ret 1;
+    }
+
+    val reserved: res[filesystem.TempFile, filesystem.FsError] = filesystem.temp_create(a, "machfuck-build");
+    if (sel reserved.err) {
+        print.eprintln("machfuck: compile error: cannot reserve temporary project");
+        ret 1;
+    }
+    var temporary:   filesystem.TempFile = reserved.ok;
+    val project_dir: str                 = filesystem.temp_path(?temporary);
+    val closed:      err[Error]          = filesystem.temp_close_and_remove(?temporary);
+    if (sel closed.err) {
+        print.eprintln("machfuck: compile error: cannot prepare temporary project");
+        ret 1;
+    }
+    val created_project: err[Error] = filesystem.create_dir(project_dir, 448);
+    if (sel created_project.err) {
+        print.eprintln("machfuck: compile error: cannot create temporary project");
+        ret 1;
+    }
+    fin {
+        filesystem.remove_all(a, project_dir);
+        A.deallocate[u8](a, project_dir, str_len(project_dir) + 1);
+    }
+
+    var init_args: [8]*u8;
+    init_args[0] = compiler.ok;
+    init_args[1] = "init";
+    init_args[2] = project_dir;
+    init_args[3] = "--name";
+    init_args[4] = "machfuck_generated";
+    init_args[5] = "--no-git";
+    init_args[6] = "--quiet";
+    init_args[7] = nil;
+    val initialized: res[exec.ExitStatus, exec.Error] = exec.run(compiler.ok, ?init_args[0], env.environ());
+    if (sel initialized.err) {
+        print.eprintln("machfuck: compile error: could not run mach init");
+        ret 1;
+    }
+    if (initialized.ok.kind != os.PROCESS_EXITED || initialized.ok.code != 0) {
+        print.eprintln("machfuck: compile error: mach init failed");
+        ret 1;
+    }
+
+    val manifest_path: res[str, StrError] = str_join(a, project_dir, "/mach.toml");
+    if (sel manifest_path.err) {
+        print.eprintln("machfuck: compile error: out of memory");
+        ret 1;
+    }
+    fin { A.deallocate[u8](a, manifest_path.ok, str_len(manifest_path.ok) + 1); }
+    val manifest_written: err[filesystem.FsError] = filesystem.write_bytes(manifest_path.ok, GENERATED_MANIFEST, str_len(GENERATED_MANIFEST), 420);
+    if (sel manifest_written.err) {
+        print.eprintln("machfuck: compile error: cannot write generated manifest");
+        ret 1;
+    }
+    val generated_path: res[str, StrError] = str_join(a, project_dir, "/src/main.mach");
+    if (sel generated_path.err) {
+        print.eprintln("machfuck: compile error: out of memory");
+        ret 1;
+    }
+    fin { A.deallocate[u8](a, generated_path.ok, str_len(generated_path.ok) + 1); }
+    val emitted: u8 = transpiler.emit(?parsed, generated_path.ok);
+    if (emitted != transpiler.OK) {
+        print.eprintln("machfuck: compile error: could not emit generated source");
+        ret 1;
+    }
+
+    var build_argv: [10]*u8;
+    build_argv[0] = compiler.ok;
+    build_argv[1] = "build";
+    build_argv[2] = project_dir;
+    build_argv[3] = "-a";
+    build_argv[4] = "machfuck_generated";
+    build_argv[5] = "-p";
+    build_argv[6] = "release";
+    build_argv[7] = "-t";
+    build_argv[8] = target;
+    build_argv[9] = "--quiet";
+    var argv_terminated: [11]*u8;
+    var k:               usize = 0;
+    for (k < 10) {
+        argv_terminated[k] = build_argv[k];
+        k                  = k + 1;
+    }
+    argv_terminated[10] = nil;
+    val built: res[exec.ExitStatus, exec.Error] = exec.run(compiler.ok, ?argv_terminated[0], env.environ());
+    if (sel built.err) {
+        print.eprintln("machfuck: compile error: could not run mach build");
+        ret 1;
+    }
+    if (built.ok.kind != os.PROCESS_EXITED || built.ok.code != 0) {
+        print.eprintln("machfuck: compile error: mach build failed");
+        ret 1;
+    }
+
+    val stemmed: res[pathmod.Path, A.Error] = pathmod.stem(a, path);
+    if (sel stemmed.err) {
+        print.eprintln("machfuck: compile error: invalid source name");
+        ret 1;
+    }
+    val stem: str = stemmed.ok;
+    if (stem == nil) {
+        print.eprintln("machfuck: compile error: invalid source name");
+        ret 1;
+    }
+    fin { A.deallocate[u8](a, stem, str_len(stem) + 1); }
+    var suffix: str = "";
+    if (str_equals(target, "windows-x86_64")) { suffix = ".exe"; }
+    val binary: res[str, StrError] = str_join(a, project_dir, "/out/", target, "/release/bin/machfuck_generated", suffix);
+    if (sel binary.err) {
+        print.eprintln("machfuck: compile error: out of memory");
+        ret 1;
+    }
+    fin { A.deallocate[u8](a, binary.ok, str_len(binary.ok) + 1); }
+    val destination: res[str, StrError] = str_join(a, directory, "/", stem, suffix);
+    if (sel destination.err) {
+        print.eprintln("machfuck: compile error: out of memory");
+        ret 1;
+    }
+    fin { A.deallocate[u8](a, destination.ok, str_len(destination.ok) + 1); }
+    var image:        Vector[u8];
+    val image_status: u8 = source.load(a, binary.ok, ?image);
+    fin { source.dnit(?image); }
+    if (image_status != source.LOAD_OK) {
+        print.eprintln("machfuck: compile error: built binary could not be read");
+        ret 1;
+    }
+    val created: err[filesystem.FsError] = filesystem.create_dir_all(a, directory, 493);
+    if (sel created.err) {
+        print.eprintlnf("machfuck: compile error: cannot create '{}'", directory);
+        ret 1;
+    }
+    val saved: err[filesystem.FsError] = filesystem.write_bytes(destination.ok, image.data, image.len, 493);
+    if (sel saved.err) {
+        print.eprintlnf("machfuck: compile error: cannot write '{}'", destination.ok);
+        ret 1;
+    }
+    print.eprintlnf("machfuck: built '{}'", destination.ok);
+    ret 0;
+}
+
+#[symbol("main")]
+fun main(argc: i64, argv: **u8) i64 {
+    if (argc == 2 && str_equals(argv[1], "--help")) {
+        print.println(HELP);
+        ret 0;
+    }
+    if (argc == 2 && str_equals(argv[1], "--version")) {
+        print.println("Machfuck 1.0.0");
+        ret 0;
+    }
+    if (argc < 2) {
+        print.eprintln("machfuck: no source file supplied; use --help for usage");
+        ret 2;
+    }
+
+    var allocator: A.Allocator;
+    val made:      err[A.Error] = page.make(?allocator);
+    if (sel made.err) {
+        print.eprintln("machfuck: unable to initialize allocator");
+        ret 1;
+    }
+
+    if (argc == 2) { ret interpret(?allocator, argv[1]); }
+    if (argc >= 3 && str_equals(argv[1], "compile")) {
+        var target:    str = "linux-x86_64";
+        var directory: str = ".";
+        var i:         i64 = 3;
+        for (i < argc) {
+            if (i + 1 >= argc) {
+                print.eprintln("machfuck: compile error: option needs a value");
+                ret 2;
+            }
+            if (str_equals(argv[i], "--target")) { target = argv[i + 1]; }
+            or (str_equals(argv[i], "--output")) { directory = argv[i + 1]; }
+            or {
+                print.eprintln("machfuck: compile error: unknown option");
+                ret 2;
+            }
+            i = i + 2;
+        }
+        ret compile_source(?allocator, argv[2], target, directory);
+    }
+    print.eprintln("machfuck: invalid arguments; use --help for usage");
+    ret 2;
+}

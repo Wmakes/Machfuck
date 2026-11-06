@@ -1,0 +1,27 @@
+# Brainfuck source loading
+
+use A: std.allocator;
+use V: std.collections.vector;
+use std.collections.vector.Vector;
+use std.filesystem;
+use std.types.path.Path;
+use std.types.result.res;
+
+pub val LOAD_OK:         u8 = 0;
+pub val LOAD_FILE_ERROR: u8 = 1;
+pub val LOAD_OUT_OF_MEM: u8 = 2;
+
+pub fun load(a: *A.Allocator, path: Path, out: *Vector[u8]) u8 {
+    @out = V.init[u8](a);
+    val loaded: res[Vector[u8], filesystem.FsError] = filesystem.read_bytes(a, path);
+    if (sel loaded.err) {
+        if (sel loaded.err.alloc) { ret LOAD_OUT_OF_MEM; }
+        ret LOAD_FILE_ERROR;
+    }
+    @out = loaded.ok;
+    ret LOAD_OK;
+}
+
+pub fun dnit(bytes: *Vector[u8]) {
+    V.dnit[u8](bytes);
+}

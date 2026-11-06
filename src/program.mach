@@ -1,0 +1,87 @@
+# Brainfuck parsing and shared intermediate representation
+
+use A: std.allocator;
+use V: std.collections.vector;
+use std.collections.vector.Vector;
+use std.types.option.opt;
+use std.types.result.res;
+use std.types.size.usize;
+
+pub val OP_RIGHT:      u8 = 1;
+pub val OP_LEFT:       u8 = 2;
+pub val OP_INCREMENT:  u8 = 3;
+pub val OP_DECREMENT:  u8 = 4;
+pub val OP_OUTPUT:     u8 = 5;
+pub val OP_INPUT:      u8 = 6;
+pub val OP_LOOP_START: u8 = 7;
+pub val OP_LOOP_END:   u8 = 8;
+
+pub val PARSE_OK:            u8 = 0;
+pub val PARSE_OUT_OF_MEM:    u8 = 1;
+pub val PARSE_OPEN_BRACKET:  u8 = 2;
+pub val PARSE_CLOSE_BRACKET: u8 = 3;
+
+# One validated operation. `jump` is meaningful only for loop operations.
+pub rec Instruction {
+    operation: u8;
+    jump:      usize;
+}
+
+pub rec Program {
+    instructions: Vector[Instruction];
+}
+
+pub fun init(a: *A.Allocator) Program {
+    ret Program{instructions: V.init[Instruction](a)};
+}
+
+pub fun dnit(p: *Program) {
+    V.dnit[Instruction](?p.instructions);
+}
+
+fun append(p: *Program, operation: u8) u8 {
+    val pushed: res[usize, A.Error] = V.push[Instruction](?p.instructions, Instruction{operation: operation, jump: 0});
+    if (sel pushed.err) { ret PARSE_OUT_OF_MEM; }
+    ret PARSE_OK;
+}
+
+# Filter source text, validate brackets, and build both sides of every jump.
+pub fun parse(a: *A.Allocator, source: *u8, length: usize, out: *Program) u8 {
+    @out = init(a);
+    var stack: Vector[usize] = V.init[usize](a);
+    fin { V.dnit[usize](?stack); }
+
+    var i: usize = 0;
+    for (i < length) {
+        val c:         u8 = source[i];
+        var operation: u8 = 0;
+        if (c == '>') { operation = OP_RIGHT; }
+        or (c == '<') { operation = OP_LEFT; }
+        or (c == '+') { operation = OP_INCREMENT; }
+        or (c == '-') { operation = OP_DECREMENT; }
+        or (c == '.') { operation = OP_OUTPUT; }
+        or (c == ',') { operation = OP_INPUT; }
+        or (c == '[') { operation = OP_LOOP_START; }
+        or (c == ']') { operation = OP_LOOP_END; }
+
+        if (operation != 0) {
+            val position: usize = out.instructions.len;
+            val status:   u8    = append(out, operation);
+            if (status != PARSE_OK) { ret status; }
+
+            if (operation == OP_LOOP_START) {
+                val pushed: res[usize, A.Error] = V.push[usize](?stack, position);
+                if (sel pushed.err) { ret PARSE_OUT_OF_MEM; }
+            }
+            or (operation == OP_LOOP_END) {
+                val opening: opt[usize] = V.pop[usize](?stack);
+                if (!sel opening.some) { ret PARSE_CLOSE_BRACKET; }
+                out.instructions.data[opening.some].jump = position;
+                out.instructions.data[position].jump     = opening.some;
+            }
+        }
+        i = i + 1;
+    }
+    if (stack.len != 0) { ret PARSE_OPEN_BRACKET; }
+    ret PARSE_OK;
+}

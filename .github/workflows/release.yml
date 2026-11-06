@@ -1,0 +1,122 @@
+name: Build and release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build, without a leading v; must match mach.toml
+        required: true
+        default: 1.0.0
+        type: string
+      publish_release:
+        description: Create a GitHub Release and upload the packages
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build-test-package:
+    runs-on: ubuntu-latest
+    env:
+      MACH_VERSION: 6.10.1
+      MACH_INSTALL_DIR: ${{ runner.temp }}/mach-bin
+      VERSION: ${{ inputs.version }}
+
+    steps:
+      - name: Check out source and dependencies
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install pinned Mach compiler
+        run: |
+          curl -fsSL https://machlang.org/install.sh | sh
+          echo "$MACH_INSTALL_DIR" >> "$GITHUB_PATH"
+
+      - name: Validate requested version
+        run: |
+          case "$VERSION" in
+            v*|'')
+              echo "Version must be non-empty and must not start with v." >&2
+              exit 1
+              ;;
+          esac
+          tools/check-version.sh "$VERSION"
+
+      - name: Format check
+        run: mach fmt --check .
+
+      - name: Build and run integration tests
+        run: |
+          mach build . -a machfuck -p debug -t linux-x86_64
+          tools/check-version.sh "$VERSION" out/linux-x86_64/debug/bin/machfuck
+          tests/run.sh
+
+      - name: Cross-build release binaries
+        run: |
+          for target in \
+            linux-x86_64 \
+            linux-arm64 \
+            linux-riscv64 \
+            windows-x86_64 \
+            darwin-x86_64 \
+            darwin-aarch64
+          do
+            mach build . -a machfuck -p release -t "$target"
+          done
+
+      - name: Package release assets
+        run: |
+          mkdir -p dist
+
+          package_tar() {
+            target=$1
+            platform=$2
+            name="Machfuck-$VERSION-$platform"
+            mkdir -p "dist/$name"
+            cp "out/$target/release/bin/machfuck" "dist/$name/machfuck"
+            cp README.md "dist/$name/README.md"
+            cp LICENSE OUTPUT-PERMISSION.md "dist/$name/"
+            cp dep/std/LICENSE "dist/$name/LICENSE-mach-std"
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+            rm -rf "dist/$name"
+          }
+
+          package_tar linux-x86_64 x86_64-linux
+          package_tar linux-arm64 aarch64-linux
+          package_tar linux-riscv64 riscv64-linux
+          package_tar darwin-x86_64 x86_64-darwin
+          package_tar darwin-aarch64 aarch64-darwin
+
+          windows_name="Machfuck-$VERSION-x86_64-windows"
+          mkdir -p "dist/$windows_name"
+          cp out/windows-x86_64/release/bin/machfuck.exe "dist/$windows_name/machfuck.exe"
+          cp README.md "dist/$windows_name/README.md"
+          cp LICENSE OUTPUT-PERMISSION.md "dist/$windows_name/"
+          cp dep/std/LICENSE "dist/$windows_name/LICENSE-mach-std"
+          (cd dist && zip -qr "$windows_name.zip" "$windows_name")
+          rm -rf "dist/$windows_name"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: Machfuck-${{ inputs.version }}-release-assets
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$VERSION" \
+            dist/*.tar.gz \
+            dist/*.zip \
+            --target "$GITHUB_SHA" \
+            --title "Machfuck $VERSION" \
+            --generate-notes
