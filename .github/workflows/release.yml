@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       MACH_VERSION: 6.10.1
-      MACH_INSTALL_DIR: ${{ runner.temp }}/mach-bin
+      MACH_INSTALL_DIR: /tmp/machfuck-mach-bin
       VERSION: ${{ inputs.version }}
 
     steps:
