@@ -6,13 +6,18 @@ on:
       version:
         description: Version to build, without a leading v; must match mach.toml
         required: true
-        default: 1.0.0
+        default: 1.0.1
         type: string
       publish_release:
         description: Create a GitHub Release and upload the packages
         required: true
         default: false
         type: boolean
+      mach_version:
+        description: Mach compiler version to install; leave blank for the latest release
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -21,7 +26,7 @@ jobs:
   build-test-package:
     runs-on: ubuntu-latest
     env:
-      MACH_VERSION: 6.10.1
+      MACH_VERSION: ${{ inputs.mach_version }}
       MACH_INSTALL_DIR: /tmp/machfuck-mach-bin
       VERSION: ${{ inputs.version }}
 
@@ -31,7 +36,7 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install pinned Mach compiler
+      - name: Install Mach compiler
         run: |
           curl -fsSL https://machlang.org/install.sh | sh
           echo "$MACH_INSTALL_DIR" >> "$GITHUB_PATH"

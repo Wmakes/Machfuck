@@ -2,12 +2,11 @@
 
 Machfuck is a Brainfuck interpreter and Brainfuck-to-Mach transpiler written entirely in [Mach](https://machlang.org/). Both backends consume the same filtered, bracket-validated instruction representation and precomputed loop jump table.
 
-Current version: **1.0.0**.
+Current version: **1.0.1**.
 
 ## Requirements
 
-- Mach 6.10.1 or a compatible 6.x release
-- mach-std 9.5.x
+- Mach 7x
 - A supported hosted target
 
 Release builds are declared for Linux x86-64, AArch64, and RISC-V 64; Windows x86-64; and macOS x86-64 and AArch64.
@@ -109,7 +108,7 @@ Run `.github/workflows/release.yml` manually from GitHub Actions or with:
 ```sh
 gh workflow run release.yml \
   --ref main \
-  -f version=1.0.0 \
+  -f version=1.0.1 \
   -f publish_release=false
 ```
 
@@ -118,7 +117,7 @@ gh workflow run release.yml \
 Validate a version locally with:
 
 ```sh
-tools/check-version.sh 1.0.0 out/linux-x86_64/debug/bin/machfuck
+tools/check-version.sh 1.0.1 out/linux-x86_64/debug/bin/machfuck
 ```
 
 

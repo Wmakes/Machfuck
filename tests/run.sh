@@ -60,7 +60,7 @@ grep -q "moved right" "$TMP/error" || fail "right boundary diagnostic"
 "$BIN" --help | grep -q "machfuck compile program.bf" || fail "--help compile usage"
 "$BIN" --help | grep -q -- "--target TARGET" || fail "--help target option"
 "$BIN" --help | grep -q "windows-x86_64" || fail "--help target list"
-"$BIN" --version | grep -q "Machfuck 1.0.0" || fail "--version"
+"$BIN" --version | grep -q "Machfuck 1.0.1" || fail "--version"
 if "$BIN" >"$TMP/output" 2>"$TMP/error"; then fail "missing source unexpectedly succeeded"; fi
 grep -q "no source file" "$TMP/error" || fail "missing source diagnostic"
 if "$BIN" "$TMP/absent.bf" >"$TMP/output" 2>"$TMP/error"; then fail "absent file unexpectedly succeeded"; fi
