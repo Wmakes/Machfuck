@@ -6,7 +6,6 @@ use std.collections.vector.Vector;
 use std.filesystem;
 use std.io.error.Error;
 use std.print;
-use std.process.env;
 use std.process.exec;
 use std.runtime;
 use std.system.os;
@@ -27,7 +26,7 @@ use machfuck.vm;
 
 val HELP: str = "Machfuck - Brainfuck interpreter and compiler\n\nUsage:\n  machfuck program.bf\n  machfuck compile program.bf [--target TARGET] [--output DIRECTORY]\n  machfuck --help\n  machfuck --version\n\nCompile options:\n  --target TARGET      Select OS and architecture (default: linux-x86_64)\n  --output DIRECTORY   Place executable in DIRECTORY (default: current directory)\n\nTargets:\n  linux-x86_64  linux-arm64  linux-riscv64\n  windows-x86_64  darwin-x86_64  darwin-aarch64\n\nCompilation requires mach on PATH. It creates an isolated temporary Mach project and writes the executable named after the .bf file (with .exe on Windows).";
 
-val GENERATED_MANIFEST: str = "[project]\nid = \"machfuck_generated\"\nversion = \"1.0.0\"\nmach = \"^6.0\"\nsrc = \"src\"\nout = \"out/{target.name}/{profile.name}\"\n\n[target.linux-x86_64]\nisa = \"x86_64\"\nos = \"linux\"\nabi = \"sysv64\"\n\n[target.linux-arm64]\nisa = \"aarch64\"\nos = \"linux\"\nabi = \"aapcs64\"\n\n[target.linux-riscv64]\nisa = \"riscv64\"\nos = \"linux\"\nabi = \"lp64\"\n\n[target.windows-x86_64]\nisa = \"x86_64\"\nos = \"windows\"\nabi = \"win64\"\n\n[target.darwin-x86_64]\nisa = \"x86_64\"\nos = \"darwin\"\nabi = \"sysv64\"\n\n[target.darwin-aarch64]\nisa = \"aarch64\"\nos = \"darwin\"\nabi = \"aapcs64\"\n\n[artifact.machfuck_generated]\nkind = \"bin\"\nentry = \"main.mach\"\nout = \"bin/machfuck_generated{artifact.suffix}\"\ntargets = [\"*\"]\nlink = [\"kernel32\"]\nneed = []\n\n[link.kernel32]\nsource = \"system\"\nname = \"kernel32.dll\"\nos = [\"windows\"]\nisa = [\"*\"]\nabi = [\"*\"]\nexport = false\n\n[profile.debug]\ndefault = true\nopt = 0\ndebug = true\nsimd = \"scalarize\"\nvectorize = false\nfloat_reassoc = false\n\n[profile.release]\nopt = 2\ndebug = false\nsimd = \"scalarize\"\nvectorize = true\nfloat_reassoc = false\n\n[dep.std]\ngit = \"https://github.com/briar-systems/mach-std\"\nversion = \"^9.5.0\"\n";
+val GENERATED_MANIFEST: str = "[project]\nid = \"machfuck_generated\"\nversion = \"1.0.0\"\nmach = \"^7\"\nsrc = \"src\"\nwork = \"out/{target.name}/{profile.name}\"\n\n[target.linux-x86_64]\narch = \"x86_64\"\nsys = \"linux\"\nabi = \"sysv64\"\n\n[target.linux-arm64]\narch = \"aarch64\"\nsys = \"linux\"\nabi = \"aapcs64\"\n\n[target.linux-riscv64]\narch = \"riscv64\"\nsys = \"linux\"\nabi = \"lp64\"\n\n[target.windows-x86_64]\narch = \"x86_64\"\nsys = \"windows\"\nabi = \"win64\"\n\n[target.darwin-x86_64]\narch = \"x86_64\"\nsys = \"darwin\"\nabi = \"sysv64\"\n\n[target.darwin-aarch64]\narch = \"aarch64\"\nsys = \"darwin\"\nabi = \"darwinpcs\"\n\n[artifact.machfuck_generated]\nkind = \"bin\"\nentry = \"main.mach\"\nout = \"{project.work}/bin/machfuck_generated{artifact.suffix}\"\ntargets = [\"*\"]\nlink = [\"kernel32\"]\nneed = []\n\n[link.kernel32]\nsource = \"system\"\nname = \"kernel32.dll\"\nsys = [\"windows\"]\narch = [\"*\"]\nabi = [\"*\"]\nexport = false\n\n[profile.debug]\ndefault = true\noptimize = false\ndebug = true\nsimd = \"scalarize\"\n\n[profile.release]\noptimize = true\ndebug = false\nsimd = \"scalarize\"\n\n[dep.std]\ngit = \"https://github.com/briar-systems/mach-std\"\nversion = \"^10.0.0\"\n";
 
 fun parser_error(status: u8) {
     if (status == program.PARSE_OPEN_BRACKET)  { print.eprintln("machfuck: parser error: unmatched opening bracket"); }
@@ -128,7 +127,7 @@ fun compile_source(a: *A.Allocator, path: str, target: str, directory: str) i64 
     init_args[5] = "--no-git";
     init_args[6] = "--quiet";
     init_args[7] = nil;
-    val initialized: res[exec.ExitStatus, exec.Error] = exec.run(compiler.ok, ?init_args[0], env.environ());
+    val initialized: res[exec.ExitStatus, exec.Error] = exec.run(compiler.ok, ?init_args[0], exec.Environment.inherit{});
     if (sel initialized.err) {
         print.eprintln("machfuck: compile error: could not run mach init");
         ret 1;
@@ -179,7 +178,7 @@ fun compile_source(a: *A.Allocator, path: str, target: str, directory: str) i64 
         k                  = k + 1;
     }
     argv_terminated[10] = nil;
-    val built: res[exec.ExitStatus, exec.Error] = exec.run(compiler.ok, ?argv_terminated[0], env.environ());
+    val built: res[exec.ExitStatus, exec.Error] = exec.run(compiler.ok, ?argv_terminated[0], exec.Environment.inherit{});
     if (sel built.err) {
         print.eprintln("machfuck: compile error: could not run mach build");
         ret 1;
